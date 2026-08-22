@@ -40,6 +40,44 @@ CLINEPASS_MODEL_PREFIX = "clinepass/"
 _BODY_SPECIFIC_HEADERS = ("content-length", "content-encoding")
 
 
+def _correct_truncated_finish_reason(
+    response: ModelResponse, request_data: dict
+) -> ModelResponse:
+    """Report a truncated ClinePass completion as ``length``, not ``stop``.
+
+    ClinePass returns ``finish_reason: "stop"`` even when generation was cut off
+    by ``max_tokens``: a request capped at 4000 came back with
+    ``completion_tokens == 4000`` and still claimed a natural stop. Callers that
+    trust ``finish_reason`` -- which is the documented way to detect truncation --
+    therefore cannot distinguish a complete answer from a guillotined one, and
+    silently consume half a JSON document or half an analysis.
+
+    ``deepseek-v4-flash`` is a reasoning model whose hidden reasoning counts
+    against the same budget and varies unpredictably (measured 379 to 2423
+    tokens for one prompt), so hitting the cap is a live outcome rather than an
+    edge case.
+
+    Only the mislabelled case is rewritten: an upstream ``length`` is already
+    correct, and anything short of the cap is left alone.
+    """
+    max_tokens = request_data.get("max_tokens") or request_data.get(
+        "max_completion_tokens"
+    )
+    if not isinstance(max_tokens, int):
+        return response
+
+    usage = getattr(response, "usage", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if not isinstance(completion_tokens, int) or completion_tokens < max_tokens:
+        return response
+
+    for choice in response.choices:
+        if getattr(choice, "finish_reason", None) == "stop":
+            choice.finish_reason = "length"
+
+    return response
+
+
 def _unwrap_response_envelope(raw_response: httpx.Response) -> httpx.Response:
     """Strip ClinePass's ``data`` wrapper off a JSON completion body.
 
@@ -185,7 +223,7 @@ class ClinePassConfig(OpenAIGPTConfig):
         api_key: str | None = None,
         json_mode: bool | None = None,
     ) -> ModelResponse:
-        return super().transform_response(
+        response = super().transform_response(
             model=model,
             raw_response=_unwrap_response_envelope(raw_response),
             model_response=model_response,
@@ -198,6 +236,7 @@ class ClinePassConfig(OpenAIGPTConfig):
             api_key=api_key,
             json_mode=json_mode,
         )
+        return _correct_truncated_finish_reason(response, request_data)
 
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]

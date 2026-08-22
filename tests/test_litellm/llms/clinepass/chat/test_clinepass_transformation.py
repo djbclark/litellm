@@ -17,6 +17,7 @@ import litellm
 from litellm.llms.clinepass.chat.transformation import (
     ClinePassConfig,
     _apply_model_prefix,
+    _correct_truncated_finish_reason,
     _unwrap_response_envelope,
 )
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
@@ -293,3 +294,88 @@ def test_upstream_401_maps_to_authentication_error():
             )
 
     assert excinfo.value.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Truncation reporting
+#
+# ClinePass returns finish_reason "stop" even when generation was cut off by
+# max_tokens, so a caller cannot tell a complete answer from a truncated one.
+# --------------------------------------------------------------------------
+
+
+def _truncated_envelope(completion_tokens: int, finish_reason: str = "stop") -> dict:
+    payload = json.loads(json.dumps(ENVELOPED_COMPLETION))
+    payload["data"]["choices"][0]["finish_reason"] = finish_reason
+    payload["data"]["usage"]["completion_tokens"] = completion_tokens
+    return payload
+
+
+def _complete(payload: dict, **kwargs):
+    def fake_post(self, url, *args, **post_kwargs):
+        return _response(payload)
+
+    with patch.object(HTTPHandler, "post", fake_post):
+        return litellm.completion(
+            model="clinepass/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            **kwargs,
+        )
+
+
+def test_completion_at_the_cap_is_reported_as_length_not_stop():
+    response = _complete(_truncated_envelope(4000), max_tokens=4000)
+    assert response.choices[0].finish_reason == "length"
+
+
+def test_completion_over_the_cap_is_reported_as_length():
+    response = _complete(_truncated_envelope(4001), max_tokens=4000)
+    assert response.choices[0].finish_reason == "length"
+
+
+def test_completion_below_the_cap_keeps_stop():
+    response = _complete(_truncated_envelope(3999), max_tokens=4000)
+    assert response.choices[0].finish_reason == "stop"
+
+
+def test_upstream_length_is_left_alone():
+    response = _complete(_truncated_envelope(4000, finish_reason="length"), max_tokens=4000)
+    assert response.choices[0].finish_reason == "length"
+
+
+def test_no_max_tokens_means_no_rewrite():
+    response = _complete(_truncated_envelope(4000))
+    assert response.choices[0].finish_reason == "stop"
+
+
+def test_max_completion_tokens_also_detects_truncation():
+    response = _complete(_truncated_envelope(4000), max_completion_tokens=4000)
+    assert response.choices[0].finish_reason == "length"
+
+
+@pytest.mark.parametrize("bad", [None, "4000", 4000.5])
+def test_non_integer_cap_is_ignored(bad):
+    class _Choice:
+        finish_reason = "stop"
+
+    class _Usage:
+        completion_tokens = 9999
+
+    class _Response:
+        choices = [_Choice()]
+        usage = _Usage()
+
+    result = _correct_truncated_finish_reason(_Response(), {"max_tokens": bad})
+    assert result.choices[0].finish_reason == "stop"
+
+
+def test_missing_usage_is_ignored():
+    class _Choice:
+        finish_reason = "stop"
+
+    class _Response:
+        choices = [_Choice()]
+        usage = None
+
+    result = _correct_truncated_finish_reason(_Response(), {"max_tokens": 4000})
+    assert result.choices[0].finish_reason == "stop"
