@@ -560,6 +560,7 @@ LITELLM_CHAT_PROVIDERS = [
     "lemonade",
     "docker_model_runner",
     "amazon_nova",
+    "clinepass",
 ]
 
 LITELLM_EMBEDDING_PROVIDERS_SUPPORTING_INPUT_ARRAY_OF_TOKENS = [
@@ -792,6 +793,7 @@ openai_compatible_providers: List = [
     "pinstripes",  # Pinstripes - JSON-configured provider
     "darkbloom",
     "meta",  # Meta Model API (Muse Spark) - JSON-configured provider
+    "clinepass",  # ClinePass (Cline API) - has its own module; listed here for exception mapping
 ]
 openai_text_completion_compatible_providers: List = [  # providers that support `/v1/completions`
     "together_ai",

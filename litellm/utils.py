@@ -7675,6 +7675,7 @@ class ProviderConfigManager:
                 False,
             ),
             LlmProviders.COMETAPI: (lambda: litellm.CometAPIConfig(), False),
+            LlmProviders.CLINEPASS: (lambda: litellm.ClinePassConfig(), False),
             LlmProviders.DATAROBOT: (lambda: litellm.DataRobotConfig(), False),
             LlmProviders.GEMINI: (lambda: litellm.GoogleAIStudioGeminiConfig(), False),
             LlmProviders.AI21: (lambda: litellm.AI21ChatConfig(), False),
